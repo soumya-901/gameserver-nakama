@@ -14,13 +14,9 @@ function App() {
     // fetch from local storage
     var useSSL = false; // Enable if server is run with an SSL certificate.
     var client = new Client("defaultkey", "127.0.0.1", "7350", useSSL);
-    const trace = false;
-    const socket = client.createSocket(useSSL, trace);
-    socket.ondisconnect = (evt) => {
-        console.info("Disconnected", evt);
-    };
+
     setNakamaClient(client);
-    const sessionToken = localStorage.getItem("sessionToken");
+    const sessionToken = sessionStorage.getItem("sessionToken");
     if (sessionToken) {
       // client.getAccount expects a Session object; create a minimal object with the token
       client.getAccount({ token: sessionToken } as any).then((accountDetails) => {
@@ -29,11 +25,11 @@ function App() {
       }).catch((error) => {
         console.log("Error fetching account details: " + error.message);
       });
-      socket.connect({token:sessionToken}as any,true).then(() => {
-          console.info("Connected to nakama socket server.");
-      }).catch((error) => {
-          console.error("Failed to connect to Nakama socket server:", error);
-      });
+      // socket.connect({token:sessionToken}as any,true).then(() => {
+      //     console.info("Connected to nakama socket server.");
+      // }).catch((error) => {
+      //     console.error("Failed to connect to Nakama socket server:", error);
+      // });
     }
 
   }, []);
@@ -41,7 +37,9 @@ function App() {
   function CustomAuthentication(username: string) {
         nakamaClient.authenticateCustom(`${username}someuniqueid`, true, username).then((session) => {
           console.log("Authenticated custom id. Session token: " + session.token);
-          localStorage.setItem("sessionToken", session.token);
+           sessionStorage.setItem("sessionToken", session.token);
+            sessionStorage.setItem("refreshToken", session.refresh_token || "");
+            sessionStorage.setItem("createdAt", session.created_at.toString());
           // Now you can fetch account details
           nakamaClient.getAccount(session).then((accountDetails) => {
             console.log("Account details:", accountDetails);
@@ -52,13 +50,14 @@ function App() {
         }).catch((error) => {
           console.log("Error authenticating custom id: " + error.message);
         });
+        
   }
 
   return (
     <>
       <h1 className="text-3xl font-bold mb-6 text-gray-800">Tic Tac Toe</h1>
       {accoutDetails ? (
-        <PlayGround  />) 
+        <PlayGround client={nakamaClient} />) 
         : (
    
             <NameInput name={name} setName={setName} CustomAuthentication={CustomAuthentication} />

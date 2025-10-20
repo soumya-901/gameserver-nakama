@@ -29,11 +29,11 @@ services:
       - "7349"
       - "7350"
       - "7351"
-    healthcheck:
-      test: ["CMD", "/nakama/nakama", "healthcheck"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    # healthcheck:
+    #   test: ["CMD", "/nakama/nakama", "healthcheck"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
     links:
       - "postgres:db"
     ports:

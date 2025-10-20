@@ -2,25 +2,41 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"nakam-rpc-func/matching"
+	"sync"
 
 	"github.com/heroiclabs/nakama-common/runtime"
 )
 
-const (
-	OpPlayerJoined = 1
-	OpPlayerMoved  = 2
+var (
+	matchStore = struct {
+		sync.RWMutex
+		matches map[string]*matching.TicTacToeMatch
+	}{matches: make(map[string]*matching.TicTacToeMatch)}
 )
 
-type MatchState struct {
-	Presences map[string]runtime.Presence `json:"presences"`
-	Board     [9]string                   `json:"board"`
-	Turn      string                      `json:"turn"`
-}
+func InitModule(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, initializer runtime.Initializer) error {
+	logger.Info("Initializing Nakama Go server module...")
+	logger.Info("Registering match 'tictactoe'")
+	if err := initializer.RegisterMatch("tictactoe", func(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule) (runtime.Match, error) {
+		match := &matching.TicTacToeMatch{
+			ID:      "gfdgdfgfdg",         // unique match ID
+			Players: make(map[string]any), // or map[string]*Player if defined
+		}
 
-func InitModule(ctx context.Context, logger runtime.Logger, nk runtime.NakamaModule, intiallizer runtime.Initializer) error {
-	logger.Info("Initializing custom module ...")
+		// Store match globally for later use
+		matchStore.Lock()
+		matchStore.matches[match.ID] = match
+		matchStore.Unlock()
 
-	intiallizer.RegisterRpc("HealthCheck", HealthCheck)
+		logger.Info("New match created and stored with ID: %s", match.ID)
+
+		logger.Info("Creating new TicTacToeMatch instance")
+		return match, nil
+	}); err != nil {
+		return err
+	}
 
 	return nil
 }
