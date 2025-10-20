@@ -24,7 +24,7 @@ export default function PlayGround() {
 
   return (
 
-      <div className="p-8 rounded-3xl shadow-lg flex flex-col items-center">
+      <div className="p-8 rounded-3xl bg-cyan-400 shadow-lg flex flex-col items-center">
       {/* Player Info */}
       <div className="flex gap-10 mb-8">
         <div
