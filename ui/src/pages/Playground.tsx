@@ -1,167 +1,179 @@
-import type { Client, Session, Socket } from "@heroiclabs/nakama-js";
+import type { Client } from "@heroiclabs/nakama-js";
 import { useEffect, useState } from "react";
-
-interface Player {
-  name: string;
-  symbol: "X" | "O";
-}
+import * as nakamajs from "@heroiclabs/nakama-js";
 
 interface PlayGroundProps {
   client: Client;
 }
 
+interface MatchState {
+  presences: Record<string, nakamajs.Presence>;
+  board: string[]; // flattened 3x3 board (length = 9)
+  current_player: string; // userId of current turn
+  started: boolean;
+  winner: string;
+}
+
+// export default function TicTacToe() {
 export default function PlayGround({ client }: PlayGroundProps) {
   const [board, setBoard] = useState<string[]>(Array(9).fill(""));
-  const [isXTurn, setIsXTurn] = useState<boolean>(true);
-  const [socketCon, setSocketCon] = useState<Socket | null>(null);
-  const [matchID , setMatchID ] = useState<string>("")
+  //  const [isXTurn, setIsXTurn] = useState<boolean>(true);
+  const [currentPlayer, setCurrentPlayer] = useState<string>("");
+  const [socket, setSocket] = useState<nakamajs.Socket | null>(null);
+  const [matchID, setMatchID] = useState<string>("");
+  // const [userId, setUserId] = useState<string>("player123"); // example
 
-  const player1: Player = { name: "Alice", symbol: "X" };
-  const player2: Player = { name: "Bob", symbol: "O" };
+  // const client = new nakamajs.Client("defaultkey", "localhost", "7350");
+  // const player1: Player = { name: "Alice", symbol: "X" };
+  // const player2: Player = { name: "Bob", symbol: "O" };
 
-  useEffect(() => {
-    const connectSocket = async () => {
-      const sessionToken = sessionStorage.getItem("sessionToken"); // use sessionStorage for consistency
-      if (!sessionToken) {
-        console.error("❌ No session token found in storage.");
-        return;
-      }
+  // ------------------------
+  // Connect to Nakama & Socket
+  // ------------------------
+  const connectSocket = async () => {
+    const sessionToken = sessionStorage.getItem("sessionToken");
+    if (!sessionToken) {
+      console.error("❌ No session token found in storage.");
+      return;
+    }
 
-      const trace = false;
-      const socket = client.createSocket(false, trace);
+    const sock = client.createSocket(false, false);
+    sock.ondisconnect = (evt) => console.warn("Disconnected:", evt);
 
-      socket.ondisconnect = (evt) => {
-        console.info("⚠️ Disconnected:", evt);
+    try {
+      await sock.connect({ token: sessionToken } as nakamajs.Session, true);
+      console.info("✅ Connected to Nakama socket server.");
+      setSocket(sock);
+
+      // ------------------------
+      // Listen for match updates
+      // ------------------------
+      sock.onmatchdata = (matchData) => {
+        const stateStr = new TextDecoder().decode(matchData.data);
+        const state: MatchState = JSON.parse(stateStr);
+        console.log("match data ",state)
+        setBoard(Array(9).fill(""));
+        setCurrentPlayer(state.current_player);
+        if (state.winner) {
+          alert(
+            state.winner === "draw" ? "It's a draw!" : `${state.winner} won!`
+          );
+        }
       };
 
-      const session: Session = {
-        token: sessionToken,
-        refresh_token: sessionStorage.getItem("refreshToken") || "",
-        created_at:
-          Number(sessionStorage.getItem("createdAt")) || Date.now() / 1000,
-      } as Session;
-
-      try {
-        console.log("🧠 Connecting to Nakama socket...");
-        await socket.connect(session, true);
-        console.info("✅ Connected to Nakama socket server.");
-        setSocketCon(socket);
-
-        socket.onmatchpresence = (data) => {
-          try {
+      
+      sock.onmatchpresence = (data) => {
+        try {
+            const member: nakamajs.Presence[] = data.joins;
+            if (currentPlayer == ""){
+              setCurrentPlayer(data.joins[0].user_id);
+            }
+            else{
+              member.forEach((element,index) => {
+                if (index>0){
+                  alert(`${element.username} has joind the game`)
+                }
+              });
+            }
             console.log("receive presensce update ",data)
           } catch (e) {
             console.error("Failed to parse match data:", e);
           }
         };
 
-        socket.onmatchdata = (data) => {
-          try {
-            console.log("on choosing x or 0 ",data)
-          } catch (err) {
-            console.error("Error decoding match data:", err);
-          }
-        };
-
-        // // 🟩 Create a new match if needed
-        // const match = await socket.createMatch("tictactoe"); // must match your Go handler name
-        // console.log("✅ Created match:", match);
-
-        // // 🟨 Join that match
-        // const joined = await socket.joinMatch(match.match_id);
-        // console.log("✅ Joined match:", joined);
-      } catch (error: any) {
-        console.error("❌ Socket or match error:", error.message);
-      }
-    };
-
-    connectSocket();
-
-    // optional cleanup
-    return () => {
-      socketCon?.disconnect(true);
-    };
-  }, [client]);
-
-  // 🧩 Helper functions (if you want to call them manually later)
-  async function createMatch() {
-    try {
-      const match = await socketCon?.createMatch("tictactoe");
-      console.log("✅ Created match:", match);
-      return match?.match_id;
+      return sock;
     } catch (err: any) {
-      console.error("❌ Failed to create match:", err.message);
+      console.error("❌ Socket connection error:", err.message);
     }
-  }
-
-  async function joinMatch(matchId: string) {
-    try {
-      console.log("🔗 Joining match...");
-      const sessionToken = sessionStorage.getItem("sessionToken");
-
-      // prefer explicit matchId, otherwise fetch top match from server
-      let targetMatchId: string = matchId;
-      if (!targetMatchId) {
-        const topMatch = await client.listMatches({
-          token: sessionToken,
-        } as Session);
-        const firstMatch =
-          topMatch.matches && topMatch.matches.length > 0
-            ? topMatch.matches[0]
-            : undefined;
-        if (!firstMatch) {
-          console.error("❌ No matches available to join.");
-          return;
-        }
-        const fmId = firstMatch.match_id;
-        if (fmId === undefined || fmId === null) {
-          console.error("❌ Top match has no match_id.");
-          return;
-        }
-        targetMatchId = fmId.toString();
-        setMatchID(targetMatchId)
-      }
-
-      if (!socketCon) {
-        console.error("❌ Socket not connected.");
-        return;
-      }
-
-      const match = await socketCon.joinMatch(targetMatchId);
-      console.log("✅ Joined match:", match);
-    } catch (err: any) {
-      console.error("Error joining match:", err.message);
-    }
-  }
-
-  function sendSymbolChoice(symbol:string) {
-  if (!socketCon) {
-    console.error("Socket not connected!");
-    return;
-  }
-
-  const payload = { symbol };
-  const encoded = new TextEncoder().encode(JSON.stringify(payload));
-  socketCon.sendMatchState(matchID, 2, encoded); // opcode 2 = symbol select
-  console.log(`Sent symbol choice: ${symbol}`);
-}
-
-
-  const handleClick = (index: number) => {
-    if (board[index]) return; // ignore already filled cells
-
-    const newBoard = [...board];
-    newBoard[index] = isXTurn ? player1.symbol : player2.symbol;
-    sendSymbolChoice(newBoard[index])
-    setBoard(newBoard);
-    setIsXTurn(!isXTurn);
   };
+
+  // ------------------------
+  // Find or Create Match
+  // ------------------------
+  const findOrCreateMatch = async () => {
+    try {
+      console.log("Start finding or creating match.....");
+      if (!socket) return;
+      const sessionToken = sessionStorage.getItem("sessionToken");
+      if (!sessionToken) return;
+
+      const session = { token: sessionToken } as nakamajs.Session;
+      const payload = { user_id: "player123" };
+      console.log("payload for client rpc ", payload);
+      const response = await client.rpc(
+        session,
+        "find_or_create_match",
+        payload
+      );
+
+      const matchData = response.payload as { match_id: string };
+      const matchId = matchData.match_id;
+      setMatchID(matchId.toString());
+      const joinedMatch = await socket.joinMatch(matchId);
+      console.log("✅ Joined match:", joinedMatch);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  // ------------------------
+  // Send Move to Server
+  // ------------------------
+  const sendMove = (index: number) => {
+    console.log("cliecking ...")
+    if (!socket || !matchID) return;
+    try {
+      // Check if it's your turn
+      // if (currentPlayer !== userId) {
+      //   console.warn("Not your turn");
+      //   return;
+      // }
+
+      const payload = `${Math.floor(index / 3)},${index % 3}`; // row,col
+      console.log("sending ....", payload," to match id ",matchID);
+      socket.sendMatchState(matchID, 4, new TextEncoder().encode(payload))
+        .then((res) => {
+          console.log("move send successfully ", res);
+        })
+        .catch((err) => {
+          console.log(err);
+        }); // op_code = 0 for move
+    } catch (error) {
+      console.log(error);
+    }
+  };
+
+  // ------------------------
+  // Handle Cell Click
+  // ------------------------
+  const handleClick = (index: number) => {
+    if (board[index]) return; // cell already filled
+    console.log("Sending index ", index);
+    sendMove(index);
+  };
+
+  // ------------------------
+  // useEffect: Connect + Join Match
+  // ------------------------
+  useEffect(() => {
+    const init = async () => {
+      await connectSocket();
+  
+    };
+    init();
+
+    return () => {
+      socket?.disconnect(true);
+    };
+  }, []);
 
   return (
     <div className="p-8 rounded-3xl bg-cyan-400 shadow-lg flex flex-col items-center">
       {/* Player Info */}
       <div className="flex gap-10 mb-8">
-        <div
+        Current turn: {currentPlayer === "player123" ? "You" : currentPlayer}
+        {/* <p className="text-2xl">{player2.symbol}</p> */}
+        {/* <div
           className={`p-4 rounded-2xl shadow ${
             isXTurn ? "bg-blue-200" : "bg-white"
           }`}
@@ -176,8 +188,7 @@ export default function PlayGround({ client }: PlayGroundProps) {
           }`}
         >
           <p className="font-semibold text-lg">{player2.name}</p>
-          <p className="text-2xl">{player2.symbol}</p>
-        </div>
+        </div> */}
       </div>
 
       {/* Game Board */}
@@ -209,19 +220,19 @@ export default function PlayGround({ client }: PlayGroundProps) {
             <span className="scale-210">{value}</span>
           </div>
         ))}
-          </div>
-        <button
-          onClick={() => createMatch()}
-          className="py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 transition-all"
-        >
-          Create Room
-        </button>
-        <button
-          onClick={() => joinMatch("")}
-          className="py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 transition-all"
-        >
-          Join Room
-        </button>
+      </div>
+      <button
+        onClick={() => findOrCreateMatch()}
+        className="py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 transition-all"
+      >
+        Create Room
+      </button>
+      <button
+        onClick={() => findOrCreateMatch()}
+        className="py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 transition-all"
+      >
+        Join Room
+      </button>
     </div>
   );
 }
