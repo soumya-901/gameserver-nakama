@@ -1,4 +1,4 @@
 session:
-  token_expiry_sec: 7200
+  token_expiry_sec: 1800
 logger:
     level: DEBUG

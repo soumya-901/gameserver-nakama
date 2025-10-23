@@ -4,6 +4,7 @@ import './App.css'
 import PlayGround from './pages/Playground'
 import {Client} from "@heroiclabs/nakama-js";
 import NameInput from './pages/NameInput';
+import { ToastContainer } from 'react-toastify';
 
 function App() {
 
@@ -55,6 +56,7 @@ function App() {
 
   return (
     <>
+    <ToastContainer />
       <h1 className="text-3xl font-bold mb-6 text-gray-800">Tic Tac Toe</h1>
       {accoutDetails ? (
         <PlayGround client={nakamaClient} />) 

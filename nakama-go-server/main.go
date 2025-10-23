@@ -5,25 +5,20 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sync"
 
+	"github.com/google/uuid"
 	"github.com/heroiclabs/nakama-common/runtime"
-)
-
-var (
-	matchStore = struct {
-		sync.RWMutex
-		matches map[string]*MatchState
-	}{matches: make(map[string]*MatchState)}
 )
 
 // MatchState holds Tic-Tac-Toe game state
 type MatchState struct {
+	MatchID       string                      `json:"match_id"`
 	Presences     map[string]runtime.Presence `json:"presences"`
 	Board         [3][3]string                `json:"board"`          // 3x3 grid
 	CurrentPlayer string                      `json:"current_player"` // UserID of current turn
-	Started       bool                        `json:"started"`        // Game active
-	Winner        string                      `json:"winner"`         // UserID or "" for draw
+	CurrentSymbol string                      `json:"current_symbol"`
+	Started       bool                        `json:"started"` // Game active
+	Winner        string                      `json:"winner"`  // UserID or "" for draw
 }
 
 // Match is the match handler
@@ -53,26 +48,31 @@ func findOrCreateMatch(ctx context.Context, logger runtime.Logger, db *sql.DB, n
 		return "", err
 	}
 
-	matchStore.Lock()
-	defer matchStore.Unlock()
+	limit := 1
+	isAuthoritative := true
+	label := ""
+	minSize := 0
+	maxSize := 1
 
-	// Check if user is already in an active match
-	for exitMatchID, match := range matchStore.matches {
-		if match.Started {
-			return fmt.Sprintf(`{"match_id":"%s"}`, exitMatchID), nil
+	matches, err := nk.MatchList(ctx, limit, isAuthoritative, label, &minSize, &maxSize, "")
+	if err != nil {
+		logger.WithField("err", err).Error("Match list error.")
+	} else {
+		for _, match := range matches {
+			logger.Info("Found match with id: %s", match.GetMatchId())
+			return fmt.Sprintf(`{"match_id":"%s"}`, match.GetMatchId()), nil
 		}
 	}
 
 	// Create new match
 
 	modulename := "tic_tac_toe"
-	if matchId, err := nk.MatchCreate(ctx, modulename, make(map[string]interface{})); err != nil {
+	matchDetails := map[string]interface{}{"match_id": uuid.New().String()}
+	if matchId, err := nk.MatchCreate(ctx, modulename, matchDetails); err != nil {
 		logger.Error("Error on match creation", err.Error())
 		return "", err
 	} else {
 		logger.Debug("Created new match", "match_id", matchId)
-		newMatch := &MatchState{Started: true}
-		matchStore.matches[matchId] = newMatch
 		return fmt.Sprintf(`{"match_id":"%s"}`, matchId), nil
 	}
 }
@@ -83,61 +83,25 @@ func newMatch(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime
 }
 
 func (m *Match) MatchInit(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, params map[string]interface{}) (interface{}, int, string) {
-	logger.Info("Initializing match instance")
+	logger.Info("Initializing match instance with params:", params)
+
+	matchID, _ := params["match_id"].(string)
+	if matchID == "" {
+		matchID = uuid.New().String() // fallback if not passed
+	}
+
 	state := &MatchState{
+		MatchID:       matchID,
 		Presences:     make(map[string]runtime.Presence),
 		Board:         [3][3]string{},
 		CurrentPlayer: "",
+		CurrentSymbol: "",
 		Started:       false,
 		Winner:        "",
 	}
-	return state, 10, "" // 10 ticks/sec (100ms)
-}
-func (m *Match) MatchDataSend(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, dispatcher runtime.MatchDispatcher, tick int64, state interface{}, sender runtime.Presence, opCode int64, data []byte) interface{} {
-	mState, _ := state.(*MatchState)
-	logger.Info(fmt.Sprintf("MatchData called with tick=%d, opCode=%d, data=%s, state=%+v", tick, opCode, string(data), state))
 
-	stateBytes, _ := json.Marshal(mState)
-	dispatcher.BroadcastMessage(4, stateBytes, nil, nil, true)
-	if !mState.Started || mState.Winner != "" {
-		return mState
-	}
-
-	if opCode != 4 {
-		logger.Error("Unexpected opCode: %d", opCode)
-		return mState
-	}
-
-	// Parse move data "row,col"
-	var row, col int
-	_, err := fmt.Sscanf(string(data), "%d,%d", &row, &col)
-	if err != nil {
-		logger.Error("Invalid move data: %v", err)
-		return mState
-	}
-
-	// Validate and apply move (uncomment and adjust as needed)
-	/*
-		   if sender.GetUserId() != mState.CurrentPlayer {
-		       logger.Error("Not this player's turn")
-		       return mState
-		   }
-		   if mState.Board[row][col] != "" {
-		       logger.Error("Cell already occupied")
-		       return mState
-		   }
-		   mState.Board[row][col] = sender.GetUserId()
-		   for userID := range mState.Presences {
-			if userID != sender.GetUserId() {
-				mState.CurrentPlayer = userID
-				break
-				}
-				}
-	*/
-
-	// Broadcast updated state
-
-	return mState
+	logger.Info("Initialized match with ID: ", matchID)
+	return state, 2, "" // 2 ticks/sec for simplicity
 }
 
 func (m *Match) MatchJoinAttempt(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, dispatcher runtime.MatchDispatcher, tick int64, state interface{}, presence runtime.Presence, metadata map[string]string) (interface{}, bool, string) {
@@ -154,13 +118,13 @@ func (m *Match) MatchJoin(ctx context.Context, logger runtime.Logger, db *sql.DB
 	for _, p := range presences {
 		mState.Presences[p.GetUserId()] = p
 	}
-
 	// Start game when 2 players join
 	if len(mState.Presences) == 2 && !mState.Started {
 		mState.Started = true
 		// Assign first player randomly (first in map)
 		for userID := range mState.Presences {
 			mState.CurrentPlayer = userID
+			mState.CurrentSymbol = "X"
 			break
 		}
 		// Broadcast initial state
@@ -175,20 +139,37 @@ func (m *Match) MatchLeave(ctx context.Context, logger runtime.Logger, db *sql.D
 	mState, _ := state.(*MatchState)
 	logger.Info("Player(s) left: %v", presences)
 
-	for _, p := range presences {
-		delete(mState.Presences, p.GetUserId())
+	for _, pdata := range presences {
+		delete(mState.Presences, pdata.GetUserId())
 	}
 
 	// End game if a player leaves
 	if mState.Started {
-		mState.Winner = "" // Draw if someone leaves
+		for useid, _ := range mState.Presences {
+			mState.Winner = useid // Draw if someone leaves
+			break
+		}
+
 		mState.Started = false
 		stateBytes, _ := json.Marshal(mState)
-		dispatcher.BroadcastMessage(1, stateBytes, nil, nil, true)
-	}
+		dispatcher.BroadcastMessage(2, stateBytes, nil, nil, true)
 
-	return mState
+	}
+	// mState.Board = [3][3]string{}
+	// mState.Presences = make(map[string]runtime.Presence)
+	// mState.CurrentPlayer = ""
+	// mState.CurrentSymbol = ""
+	// mState.Winner = ""
+	stateBytes, _ := json.Marshal(mState)
+	// dispatcher.MatchKick(nil)
+	dispatcher.BroadcastMessage(2, stateBytes, nil, nil, true)
+
+	return nil
 }
+
+// func terminateMatch(mState *MatchState, logger runtime.Logger) {
+
+// }
 
 func (m *Match) MatchLoop(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, dispatcher runtime.MatchDispatcher, tick int64, state interface{}, matchState []runtime.MatchData) interface{} {
 	mState, _ := state.(*MatchState)
@@ -196,21 +177,73 @@ func (m *Match) MatchLoop(ctx context.Context, logger runtime.Logger, db *sql.DB
 	if !mState.Started || mState.Winner != "" {
 		return mState
 	}
+	logger.Debug("Running match loop", mState, matchState)
+	for _, msg := range matchState {
+		switch msg.GetOpCode() {
+		case 4:
+			var row, col int
+			_, err := fmt.Sscanf(string(msg.GetData()), "%d,%d", &row, &col)
+			if err != nil {
+				logger.Error("Error occure ", err)
+				return nil
+			}
+			logger.Debug("Player %s made a move: %+v", msg.GetUserId(), msg.GetData())
+
+			// // Apply move
+			mState.Board[row][col] = mState.CurrentSymbol
+
+			// Switch turn
+			for userID := range mState.Presences {
+				if userID != msg.GetUserId() {
+					mState.CurrentPlayer = userID
+					if mState.CurrentSymbol == "X" {
+						mState.CurrentSymbol = "0"
+					} else {
+						mState.CurrentSymbol = "X"
+					}
+					break
+				}
+			}
+			stateBytes, _ := json.Marshal(mState)
+			// Process move and update game state here...
+
+			// Optionally broadcast the move to other players:
+			dispatcher.BroadcastMessage(4, stateBytes, nil, nil, true)
+
+		}
+
+	}
 
 	// Check for a winner
-	mState.Winner = checkWinner(mState.Board)
-	if mState.Winner != "" {
+	winnerSymbol := checkWinner(mState.Board)
+	if winnerSymbol != "" {
+		// Find userID by symbol
+		if winnerSymbol == mState.CurrentSymbol {
+			mState.Winner = mState.CurrentPlayer
+		} else {
+			for userID := range mState.Presences {
+				if userID != mState.CurrentPlayer {
+					mState.Winner = userID
+					break
+				}
+			}
+		}
+
 		mState.Started = false
 		stateBytes, _ := json.Marshal(mState)
 		dispatcher.BroadcastMessage(2, stateBytes, nil, nil, true)
+		logger.Info("Match terminated:", mState.MatchID)
+		return nil
+
 	}
 
-	// Check for draw
+	// // Check for draw
 	if mState.Winner == "" && isBoardFull(mState.Board) {
 		mState.Winner = "draw"
 		mState.Started = false
 		stateBytes, _ := json.Marshal(mState)
 		dispatcher.BroadcastMessage(2, stateBytes, nil, nil, true)
+		return nil
 	}
 
 	return mState
@@ -253,19 +286,8 @@ context.Context, "github.com/heroiclabs/nakama-common/runtime".Logger, *sql.DB, 
 */
 
 func (m *Match) MatchTerminate(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, dispatcher runtime.MatchDispatcher, tick int64, state interface{}, nedata int) interface{} {
-	// Remove match from store
-	logger.Debug("Termination match ", state, tick, dispatcher, nk, nedata)
-	matchStore.Lock()
-	defer matchStore.Unlock()
-
-	// for id, match := range matchStore.matches {
-	// 	if match == m {
-	// 		delete(matchStore.matches, id)
-	// 		logger.Debug("Terminated match", "match_id", id)
-	// 		break
-	// 	}
-	// }
-	return state
+	mState, _ := state.(*MatchState)
+	return mState
 }
 
 /*
@@ -312,7 +334,7 @@ func (m *Match) MatchSignal(ctx context.Context, logger runtime.Logger, db *sql.
 
 	// Broadcast updated state
 	stateBytes, _ := json.Marshal(mState)
-	dispatcher.BroadcastMessage(3, stateBytes, nil, nil, true)
+	dispatcher.BroadcastMessage(4, stateBytes, nil, nil, true)
 
 	return mState, data
 }
